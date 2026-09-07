@@ -1,0 +1,4 @@
+# bundle 层声明：以 npm 包名插入（`dsh plugin --profile <name> add dsh-astock-workbench` 时生效）
+- insert:
+    - id: astock-workbench
+      name: dsh-astock-workbench

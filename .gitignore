@@ -1,0 +1,8 @@
+node_modules/
+lib/
+*.log
+.DS_Store
+.env
+# data/ 只保留示例表：真实持仓/流水/简报永不入库
+data/*
+!data/holdings.example.csv

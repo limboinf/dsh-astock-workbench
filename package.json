@@ -1,0 +1,49 @@
+{
+  "name": "dsh-astock-workbench",
+  "version": "0.1.0",
+  "description": "A股投资工作台 —— DeepSeek Harness (dsh) 插件：持仓管理、实时行情、每日简报",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": {
+      "default": "./lib/client.js"
+    }
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "skills"
+  ],
+  "scripts": {
+    "build": "npm run build:host && npm run build:client",
+    "build:host": "tsdown",
+    "build:client": "tsdown -c tsdown.client.config.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "live-check": "node --import tsx scripts/live-check.ts",
+    "prepare": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "~18.3.1",
+    "tsdown": "^0.14.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  }
+}

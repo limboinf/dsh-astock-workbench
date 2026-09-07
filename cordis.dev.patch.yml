@@ -1,0 +1,9 @@
+# 开发层声明：直接加载本目录源码（无需构建），配合 dsh 仓库使用：
+#   cd /path/to/deepseek-harness
+#   pnpm dsh --profile web --patch /path/to/dsh-astock-workbench/cordis.dev.patch.yml
+# ⚠️ --patch 是根启动器参数，必须写在子命令（web/headless）之前，
+#    `dsh web --patch` 写法会报 unknown option；3080 端口冲突时参考 README 改 webserver 覆盖。
+# 相对路径锚定在本文件所在目录。
+- insert:
+    - id: astock-workbench
+      name: './src/index.ts'

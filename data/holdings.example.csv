@@ -1,0 +1,7 @@
+# dsh-astock-workbench 持仓示例表
+# 复制到数据目录后生效：  mkdir -p ~/.dsh/astock-workbench && cp data/holdings.example.csv ~/.dsh/astock-workbench/holdings.csv
+# 列：code,name,shares,cost,sector,note（name/sector/note 可留空）
+code,name,shares,cost,sector,note
+600519,贵州茅台,100,1700,白酒,长期底仓
+300750,宁德时代,200,260,电池,波段
+000001,,1000,11.5,银行,打新底仓
