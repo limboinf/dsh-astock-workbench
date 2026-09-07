@@ -34,7 +34,7 @@ fuyao 行情(主) ──┤
 | 快速看仓 | 斜杠命令 `/portfolio` | 不经模型，纯本地计算打印汇总 |
 | 大盘概览直读 | 斜杠命令 `/market` | 不经模型，纯本地取数打印三大指数/涨跌家数/成交额/主力净流入（失败不报错，装在载荷 error 字段里由 UI 降级） |
 | 画像读写 | 斜杠命令 `/profile` | 不经模型读写投资者画像（详略/术语/结构 + 一句话自述，存 `profile.json`），面板 ⚙ 设置卡走此通道 |
-| 每日简报 | `scripts/daily-briefing.sh` | 系统 cron → dsh headless 全新会话 → 简报落盘 `briefings/<日期>.md` |
+| 每日简报 | dsh 原生计划任务 | 定时触发交给 dsh 自身调度（系统 cron + 脚本方案已废弃）；简报内容按 astock-briefing 技能生成，落盘 `briefings/<日期>.md` |
 | 简报规范 | 技能 `astock-briefing` | 约束模型：数字必须引用工具返回、不给投资建议 |
 
 ## 数据目录
@@ -49,8 +49,7 @@ fuyao 行情(主) ──┤
 ├── decision-logs/     # 交易日决策日志：YYYY-MM-DD.md
 ├── balance.json      # 可选：资产口径（现金 { cash } 或快照 { totalAssets }，二选一）+ { updatedAt, note }
 ├── profile.json      # 可选：投资者画像（面板 ⚙ 设置卡 / /profile 命令写入）
-├── env               # 可选：export DEEPSEEK_API_KEY=...（cron 用）、export FUYAO_API_KEY=...（fuyao 行情主源）
-└── cron.log          # 可选：cron 运行日志
+└── env               # 可选：export FUYAO_API_KEY=...（fuyao 行情主源）
 ```
 
 `holdings.csv` 列：`code,name,shares,cost,sector,note`，`#` 行与空行忽略，股数须为正整数。
@@ -118,17 +117,6 @@ pnpm dsh --profile headless --patch /path/to/dsh-astock-workbench/cordis.dev.pat
 pnpm dsh --profile headless --dump-config | grep astock                                                              # GitHub/本地安装（不带 --patch）
 # 2) 打开 web 后问模型：「看看我的持仓」→ 应触发 astock_positions 工具
 ```
-
-## 每日简报（cron）
-
-```bash
-# 编辑 cron：crontab -e，加入（周一到周五 16:10，收盘后留足数据稳定时间）
-10 16 * * 1-5 /path/to/dsh-astock-workbench/scripts/daily-briefing.sh >> "$HOME/.dsh/astock-workbench/cron.log" 2>&1
-```
-
-脚本会：加载 `~/.dsh/astock-workbench/env` 里的 API key → 在数据目录起一个
-headless 全新会话 → 模型调 `astock_positions` 取数 → 简报（stdout）写入
-`briefings/<日期>.md`。
 
 ## 安装简报/对账技能（可选）
 

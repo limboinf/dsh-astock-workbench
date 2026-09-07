@@ -5,7 +5,7 @@ MVP：持仓记账 + 实时行情 + 确定性汇总 + AI 每日简报。
 
 - dsh 源码仓库（本机）：`/Users/limbo/work/github/deepseek-harness`（需先 `pnpm install` + `pnpm run build:lib`）
 - 插件开发官方文档：https://deepseek-harness.github.io/deepseek-harness/develop/basic
-- 仓库根 README.md 有完整的接入/cron/验证命令，改动部署相关内容时先同步读它
+- 仓库根 README.md 有完整的接入/验证命令，改动部署相关内容时先同步读它
 
 ## 常用命令
 
@@ -43,7 +43,7 @@ src/decision-entry.ts 决策日志条目契约（纯类型 + 纯函数、零 imp
 src/dto.ts      面板数据契约（host ⇄ client 唯一载荷）：纯类型 + 纯函数、零 import，
                 所以 client 半面能直接 import，两边不再双写。换传输通道时本文件不动
 test/           node:test 单测（CSV、行情解析、汇总计算、apply 注册面）
-scripts/        daily-briefing.sh（cron→dsh headless 简报）、live-check.ts
+scripts/        live-check.ts
 skills/astock-briefing/  简报规范技能（约束模型：数字必须引用工具返回、不给投资建议）
 skills/astock-reconcile/ 截图对账技能（约束模型：逐行抄数、两段式确认、token 原样传递）
 docs/           web-ui注入技术方案-20260903.md（待 review 的 Web UI 计划）
@@ -80,7 +80,7 @@ cordis.patch.yml      安装模式：以 npm 包名插入
   坏行跳过并返回 warnings；坏行/重复代码未清理前，记账工具拒绝写回
   （fail-closed 防覆盖丢数据），注释行写回时逐字保留（holdings.ts 的文档模型）。
 - 数据目录：环境变量 `ASTOCK_DATA_DIR`，默认 `~/.dsh/astock-workbench/`（含
-  holdings.csv、trades.csv（卖出流水）、briefings/、可选 env 文件存 DEEPSEEK_API_KEY（cron 用）与
+  holdings.csv、trades.csv（卖出流水）、briefings/、可选 env 文件存
   FUYAO_API_KEY（行情主源；另项目根 `.env` 供开发自检，已在 .gitignore）。
 
 ## dsh 接入的坑
@@ -101,8 +101,6 @@ cordis.patch.yml      安装模式：以 npm 包名插入
   `deepseek-harness/packages/bundle/web-app/cordis.patch.yml:116`）。
 - 安装模式：`npm run build` 后在 dsh 仓库执行 `pnpm dsh plugin --profile web add <本仓库路径>`。
 - 验证插件挂载：`pnpm dsh --profile headless --patch <dev.patch> --dump-config | grep astock`。
-- cron 环境不加载 shell 配置，API key 靠 `~/.dsh/astock-workbench/env` 文件注入
-  （见 `scripts/daily-briefing.sh`）。
 
 ## 敏感区前置阅读
 

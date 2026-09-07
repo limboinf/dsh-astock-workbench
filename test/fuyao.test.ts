@@ -22,7 +22,7 @@ test('parseEnvText：支持 export 前缀、引号、注释与空行', () => {
 
 test('resolveFuyaoApiKey：环境变量 → 数据目录 env 文件', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fuyao-key-'))
-  writeFileSync(join(dir, 'env'), '# cron 同款\nexport FUYAO_API_KEY=sk-fuyao-from-file\n', 'utf8')
+  writeFileSync(join(dir, 'env'), '# 数据目录 env 文件\nexport FUYAO_API_KEY=sk-fuyao-from-file\n', 'utf8')
   const prevDir = process.env.ASTOCK_DATA_DIR
   const prevKey = process.env.FUYAO_API_KEY
   try {

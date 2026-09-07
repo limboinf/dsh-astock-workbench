@@ -7,7 +7,7 @@
  *
  * 接口契约（官方文档 + 2026-09-04 实测固化）：
  * - 认证：X-api-key 请求头。key 查找顺序：环境变量 FUYAO_API_KEY →
- *   数据目录 env 文件（cron 同款，支持 export 前缀）→ 包内 .env（开发自检用）。
+ *   数据目录 env 文件（支持 export 前缀）→ 包内 .env（开发自检用）。
  * - 响应恒 HTTP 200，业务码 code=0 才成功；错误体 {code, message, request_id}。
  * - /api/a-share/prices/snapshot：thscodes 逗号批量，只覆盖沪深**股票**
  *   （ETF/北交所不在内）；批量含未知代码时整批报 1002（上层剔除后重试）；
@@ -58,7 +58,7 @@ function projectEnvFile(): string | undefined {
   }
 }
 
-/** fuyao key：环境变量 → 数据目录 env（cron 同款）→ 包内 .env；找不到返回 undefined */
+/** fuyao key：环境变量 → 数据目录 env → 包内 .env；找不到返回 undefined */
 export function resolveFuyaoApiKey(): string | undefined {
   const fromEnv = process.env.FUYAO_API_KEY?.trim()
   if (fromEnv !== undefined && fromEnv !== '') return fromEnv
