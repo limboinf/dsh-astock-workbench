@@ -24,6 +24,28 @@ fuyao 行情(主) ──┤
 腾讯行情(兜底) ──┘
 ```
 
+## 让 AI 帮你安装
+
+复制下面整段话，发给你的 AI 编程助手（dsh、Claude Code 等任意 Agent），它会替你完成安装和配置：
+
+```text
+请帮我安装 DeepSeek Harness（dsh）插件 dsh-astock-workbench（A 股投资工作台）。
+
+1. 在本机找到 deepseek-harness 仓库目录（常见位置如 ~/work/github/deepseek-harness）；
+   如果没有，先 git clone https://github.com/deepseek-ai/deepseek-harness 并执行 pnpm install。
+2. 在该仓库目录执行：pnpm dsh plugin --profile web add github:limboinf/dsh-astock-workbench
+3. 如果安装报「prepare / 构建授权」类错误（pnpm 10 及以上默认拒绝运行 git 依赖的
+   prepare 脚本），在 --profile web 对应 profile 目录的 pnpm-workspace.yaml 中加入：
+   allowBuilds:
+     dsh-astock-workbench: true
+   然后重新执行第 2 步。
+4. 验证安装：pnpm dsh --profile headless --dump-config | grep astock
+   输出里有 astock-workbench 即为成功。
+5. 最后询问我是否有 fuyao（https://fuyao.aicubes.cn）的 API Key：
+   有则帮我写入 ~/.dsh/astock-workbench/env 文件（内容一行：export FUYAO_API_KEY=我的Key，
+   目录不存在就先创建）；没有则跳过，行情会自动使用腾讯免费接口兜底。
+```
+
 ## 功能
 
 | 能力 | 入口 | 说明 |
