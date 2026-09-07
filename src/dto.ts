@@ -79,7 +79,7 @@ export interface PortfolioPayload {
     asOf: string | null
   }
   day: {
-    /** Σ(现价−昨收)×股数，与券商「当日参考盈亏」金额同源 */
+    /** 当日盈亏金额，现金流量法（见 format.ts summarize），与券商「当日参考盈亏」同口径 */
     pnl: number | null
     /** 百分比，分母口径见 basis */
     pct: number | null
@@ -98,8 +98,11 @@ export interface PortfolioPayload {
 
 /**
  * 当日盈亏率的分母：对齐券商「当日参考盈亏」用昨收总资产，而不是持仓市值。
- * 现金口径能精确还原（昨收持仓市值 + 现金）；手动快照直接当昨收总资产用，
+ * 现金口径能精确还原（昨收持仓市值 + 昨收现金）；手动快照直接当昨收总资产用，
  * 偏差只有 dayPnl/总资产 量级。两者都没有时退化为持仓口径。
+ *
+ * 昨收现金要从今日现金里把当日成交的现金流倒推回去：当日卖出会让今日现金凭空
+ * 多一块、买入少一块，直接拿今日现金当昨日现金，分母会连本带利算两遍。
  *
  * 单独导出是因为文本渲染和结构化载荷都要用它——同一个口径只能有一份实现。
  */
@@ -107,9 +110,11 @@ export function resolveDayPnlBasis(
   dayPrevValue: number | null,
   cash: number | undefined,
   manualTotalAssets: number | undefined,
+  /** 当日净卖出金额（卖出收入 − 买入支出），见 PortfolioSummary.dayCashFlow */
+  dayCashFlow = 0,
 ): { base: number | null; basis: DayPnlBasis } {
   const base = cash !== undefined && dayPrevValue !== null
-    ? dayPrevValue + cash
+    ? dayPrevValue + cash - dayCashFlow
     : manualTotalAssets ?? null
   return base !== null && base > 0
     ? { base, basis: 'total-assets' }

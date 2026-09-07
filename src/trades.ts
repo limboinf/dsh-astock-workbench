@@ -323,3 +323,54 @@ export function tradesTemplate(): string {
     '',
   ].join('\n')
 }
+
+/**
+ * 当日成交按标的聚合 —— 当日盈亏改用现金流量法的输入（消费方见 format.ts summarize）。
+ *
+ * 为什么需要它：券商的「当日参考盈亏」对当日新买入的股份以成交价起算，对当日卖掉
+ * 的股份仍把当天赚到的钱计在内。只按 Σ(现价−昨收)×现股数 算会错两处——加仓那部分
+ * 被从昨收起算（凭空多担/多吃一段涨跌），当日清仓的标的整只从持仓表消失、当天的
+ * 盈亏直接蒸发。2026-09-07 实测两处合计差 1,490 元。
+ *
+ * 缺 price 的记录进不了现金流（算不出金额），单独计 skipped 交上层出提示：
+ * 静默按 0 处理会让当日盈亏错得毫无痕迹，比不算更糟。
+ */
+export interface DayTurnover {
+  code: string
+  /** 展示名（取当日首条记录的 name，可能为空） */
+  name: string
+  /** 当日买入股数（只累计有成交价的记录） */
+  buyShares: number
+  /** 当日买入支出 = Σ price×shares */
+  buyAmount: number
+  sellShares: number
+  sellAmount: number
+  /** 当日有成交但缺 price、未计入现金流的笔数 */
+  skipped: number
+}
+
+/** 按标的聚合指定交易日的成交流水；当日无成交时返回空 Map */
+export function collectDayTurnover(records: TradeRecord[], date: string): Map<string, DayTurnover> {
+  const out = new Map<string, DayTurnover>()
+  for (const r of records) {
+    if (r.date !== date) continue
+    let t = out.get(r.code)
+    if (t === undefined) {
+      t = { code: r.code, name: r.name, buyShares: 0, buyAmount: 0, sellShares: 0, sellAmount: 0, skipped: 0 }
+      out.set(r.code, t)
+    }
+    if (t.name === '') t.name = r.name
+    if (r.price === null) {
+      t.skipped++
+      continue
+    }
+    if (r.action === 'buy') {
+      t.buyShares += r.shares
+      t.buyAmount += r.price * r.shares
+    } else {
+      t.sellShares += r.shares
+      t.sellAmount += r.price * r.shares
+    }
+  }
+  return out
+}

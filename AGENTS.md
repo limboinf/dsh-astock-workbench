@@ -21,8 +21,9 @@ npm run build       # tsdown → lib/index.js（ESM，无 dts）
 ```
 src/index.ts    插件入口（export name/inject/apply），注册 13 个 astock_* 工具 + /portfolio、/decision-logs 命令
 src/holdings.ts 持仓 CSV 解析/加权合并/清仓/覆盖写（文档模型：注释/坏行原样保留），纯函数，单测覆盖
-src/trades.ts   卖出流水 trades.csv（文档模型同 holdings）：清仓/减仓自动补记 + 手动补录，
-                已实现盈亏统计（合计/笔数/胜率/skipped）；卖出价=当时行情、成本=本地口径，可手工修正
+src/trades.ts   成交流水 trades.csv（文档模型同 holdings）：清仓/减仓自动补记 + 手动补录，
+                已实现盈亏统计（合计/笔数/胜率/skipped）；卖出价=当时行情、成本=本地口径，可手工修正；
+                collectDayTurnover 按标的聚合当日成交，供 format.ts 算当日盈亏
 src/balance.ts  手动资产口径（balance.json）：现金（总资产=持仓市值+现金，随行情变动）与快照（静态数字）互斥，后写覆盖
 src/reconcile.ts 持仓对账：外部行集校验/diff/token 两段式写入（模型只抄数，校验与写入全在本地）
 src/symbols.ts  股票代码规范化（sh/sz/bj 前缀规则单一来源，holdings/quotes 共用）
@@ -79,6 +80,15 @@ cordis.patch.yml      安装模式：以 npm 包名插入
 - holdings.csv 列 `code,name,shares,cost,sector,note`；容忍空行与 `#` 注释行；
   坏行跳过并返回 warnings；坏行/重复代码未清理前，记账工具拒绝写回
   （fail-closed 防覆盖丢数据），注释行写回时逐字保留（holdings.ts 的文档模型）。
+- 当日盈亏用现金流量法（format.ts summarize）：逐只算
+  `(现市值 + 当日卖出收入) − 昨收×昨日股数 − 当日买入支出`，昨日股数由
+  `现股数 + 当日卖出 − 当日买入` 反推。老口径 `Σ(现价−昨收)×现股数` 会把当日加仓
+  的股份从昨收起算、把当日清仓的标的整只丢掉（2026-09-07 实测差 1,490 元）。
+  **代价：口径正确性依赖记账纪律** —— 当日成交必须落到 trades.csv 才算得准：
+  清仓/减仓走 astock_remove_position / astock_reconcile 自动补记；加仓要给
+  astock_add_position 传 `tradeDate`（不传只更新持仓表，退回昨收口径少算一段——
+  这是刻意的 fail-safe：把历史持仓补录当成当日买入错得远比漏记严重）。
+  流水缺成交价、或当日清仓标的取不到行情时，summary.dayGaps 出提示，绝不猜数。
 - 数据目录：环境变量 `ASTOCK_DATA_DIR`，默认 `~/.dsh/astock-workbench/`（含
   holdings.csv、trades.csv（卖出流水）、briefings/、可选 env 文件存
   FUYAO_API_KEY（行情主源；另项目根 `.env` 供开发自检，已在 .gitignore）。

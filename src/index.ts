@@ -51,6 +51,7 @@ import {
 import {
   appendTradeRecord,
   makeSellRecord,
+  collectDayTurnover,
   parseTradesDoc,
   renderTradesDoc,
   renderTradesList,
@@ -207,9 +208,26 @@ async function recordSellEvents(
 }
 
 /** 已实现盈亏统计的单一取数口：汇总、面板载荷、流水工具都用这份数字 */
-function readRealized(trades: TradesStore): { stats: ReturnType<typeof summarizeTrades>; warnings: string[] } {
+function readRealized(trades: TradesStore): {
+  stats: ReturnType<typeof summarizeTrades>
+  warnings: string[]
+  records: TradeRecord[]
+} {
   const doc = trades.loadDoc()
-  return { stats: summarizeTrades(doc.records), warnings: doc.warnings }
+  return { stats: summarizeTrades(doc.records), warnings: doc.warnings, records: doc.records }
+}
+
+/**
+ * 行情快照所属的交易日（YYYY-MM-DD）——当日成交要跟行情的「昨收」对齐同一天。
+ * 不能用本机今天：周末/盘后看面板时本机已翻篇，而行情还停在上个交易日，
+ * 按本机日期取成交会取空，当日盈亏悄悄退回「全按昨收算」的旧口径。
+ * 两种行情源的时间形态都带日期：东财 14 位数字串、fuyao 已格式化的 'YYYY-MM-DD HH:MM:SS'。
+ */
+function resolveTradingDate(quoteTime: string | undefined): string | null {
+  if (quoteTime === undefined) return null
+  if (/^\d{14}$/.test(quoteTime)) return `${quoteTime.slice(0, 4)}-${quoteTime.slice(4, 6)}-${quoteTime.slice(6, 8)}`
+  const m = /^(\d{4}-\d{2}-\d{2})\b/.exec(quoteTime)
+  return m === null ? null : m[1]
 }
 
 async function buildPositionsText(store: HoldingsStore, trades: TradesStore, signal?: AbortSignal): Promise<string> {
@@ -229,8 +247,24 @@ async function buildPositionsText(store: HoldingsStore, trades: TradesStore, sig
   } catch (e) {
     quoteError = String(e instanceof Error ? e.message : e)
   }
-  const summary = summarize(positions, quotes)
   const onlyTime = [...quotes.values()][0]?.time
+  const realized = readRealized(trades)
+  // 当日成交要参与当日盈亏（见 format.ts summarize 的现金流量法）。当日清仓的标的
+  // 已不在持仓表里、上面那次行情没请求它，这里按需补一次拿昨收——只在真有当日
+  // 清仓时才多发一个请求，平时零开销。补取失败不阻塞，summary 会出 dayGaps 提示。
+  const tradingDate = resolveTradingDate(onlyTime)
+  const dayTurnover = tradingDate === null
+    ? undefined
+    : collectDayTurnover(realized.records, tradingDate)
+  const closedOut = [...(dayTurnover?.keys() ?? [])].filter(code => !quotes.has(code))
+  if (closedOut.length > 0) {
+    try {
+      for (const [code, q] of await fetchQuotes(closedOut, { signal })) quotes.set(code, q)
+    } catch {
+      // 忽略：当日盈亏会把这些标的记进 dayGaps，由文案提示，不猜数
+    }
+  }
+  const summary = summarize(positions, quotes, dayTurnover)
   // 资产口径二选一（balance.json 互斥存储）：现金口径（总资产=持仓市值+现金，随行情变动）
   // 优先于快照口径（静态数字）。都未录入时保持持仓口径。
   const balance = readBalance(store.dir)
@@ -245,7 +279,6 @@ async function buildPositionsText(store: HoldingsStore, trades: TradesStore, sig
       ? { value: balance.totalAssets, updatedAt: balance.updatedAt }
       : undefined
   const quoteTimeText = onlyTime ? formatQuoteTime(onlyTime) : undefined
-  const realized = readRealized(trades)
   const hasRealized = realized.stats.trades > 0 || realized.stats.skipped > 0
   let text = renderSummaryText(summary, quoteTimeText, manualTotalAssets, cash, hasRealized ? realized.stats : undefined)
   if (quoteError) {
@@ -732,16 +765,24 @@ export function apply(ctx: DshPluginContext): void {
     name: 'astock_add_position',
     description:
       '向持仓表新增或合并一条持仓（记账，不是交易）。同一代码按股数加权合并成本。' +
-      '用户说「我买了/加仓了 XX」时用本工具记录。',
+      '用户说「我买了/加仓了 XX」时用本工具记录。' +
+      '本笔是真实成交（而非补录已有的历史持仓）时必须传 tradeDate=成交日：' +
+      '当日成交要进流水，当日盈亏才能跟券商「当日参考盈亏」对上。',
     parameters: {
       type: 'object',
       properties: {
         code: { type: 'string', description: '股票代码，如 600519' },
         shares: { type: 'number', description: '股数（正数）' },
-        cost: { type: 'number', description: '每股成本（元）' },
+        cost: { type: 'number', description: '每股成本（元）；本笔成交时即成交价' },
         name: { type: 'string', description: '股票名称（可选，新增时生效）' },
         sector: { type: 'string', description: '行业/板块（可选，新增时生效）' },
         note: { type: 'string', description: '备注，如买入理由（可选，新增时生效）' },
+        tradeDate: {
+          type: 'string',
+          description:
+            '本笔买入的成交日 YYYY-MM-DD（今天成交就传今天）。传了才会在 trades.csv 补记买入流水；' +
+            '把已经持有的历史持仓录进表里时不要传，否则会被当成当日买入、算错当日盈亏。',
+        },
       },
       required: ['code', 'shares', 'cost'],
     },
@@ -756,15 +797,42 @@ export function apply(ctx: DshPluginContext): void {
       name?: string
       sector?: string
       note?: string
+      tradeDate?: string
     }) => {
       const doc = store.loadDoc()
       if (doc.warnings.length > 0) return refuseWrite(doc.warnings)
       const { doc: next, merged } = mergePositionInDoc(doc, args)
       store.writeDoc(next)
-      return [
+      const lines = [
         `已记账：${merged.code} ${args.name?.trim() || merged.name || ''} ${merged.shares} 股 @ 成本 ${merged.cost}`,
         `持仓表已更新：${store.file}`,
-      ].join('\n')
+      ]
+      // 买入流水只在明确给了成交日时补记：holdings 的加权成本已经把买入记全了，
+      // 流水这份是给「当日盈亏」用的（当日买入的股份从成交价起算，不从昨收起算）。
+      // 默认不记是 fail-safe——把首次建仓补录的历史持仓当成当日买入，当日盈亏会
+      // 变成「浮动盈亏」量级的离谱数字；漏记只是退回昨收口径，错得小得多。
+      const tradeDate = args.tradeDate?.trim()
+      if (tradeDate !== undefined && tradeDate !== '') {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(tradeDate)) {
+          lines.push(`⚠️ tradeDate「${tradeDate}」不是 YYYY-MM-DD，买入流水未补记（持仓表已更新）`)
+          return lines.join('\n')
+        }
+        const { warning } = trades.appendAll([{
+          date: tradeDate,
+          code: merged.code,
+          name: args.name?.trim() || merged.name || '',
+          action: 'buy',
+          shares: args.shares,
+          price: args.cost,
+          cost: null,
+          pnl: null,
+          note: args.note?.trim() || '加仓记账自动补记',
+        }])
+        lines.push(warning === undefined
+          ? `买入流水已补记：${tradeDate} ${args.shares} 股 @ ${args.cost}（当日盈亏据此从成交价起算）`
+          : `⚠️ ${warning}`)
+      }
+      return lines.join('\n')
     },
   })
 

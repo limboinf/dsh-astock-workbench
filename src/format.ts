@@ -5,6 +5,7 @@
 
 import type { Position } from './holdings.ts'
 import { formatQuoteTime, type Quote } from './quotes.ts'
+import type { DayTurnover } from './trades.ts'
 
 export interface PositionRow {
   position: Position
@@ -30,12 +31,16 @@ export interface PortfolioSummary {
   totalPnl: number | null
   /** 累计盈亏率（%）：totalPnl / 有行情部分的成本合计（部分覆盖时与 totalPnl 同口径） */
   totalPnlPct: number | null
-  /** 当日盈亏金额（元）：Σ(现价_i − 昨收_i) × 股数_i，与券商「当日参考盈亏」同口径 */
+  /** 当日盈亏金额（元）：现金流量法，见 summarize，与券商「当日参考盈亏」同口径 */
   dayPnl: number | null
-  /** 当日盈亏率（%）：dayPnl / Σ(昨收_i × 股数_i)，持仓口径；券商口径见 renderSummaryText */
+  /** 当日盈亏率（%）：dayPnl / 昨收持仓市值，持仓口径；券商口径见 renderSummaryText */
   dayPnlPct: number | null
-  /** 昨收持仓市值：Σ(昨收_i × 股数_i)，与 dayPnl 同覆盖；供上层换算「占总资产」口径 */
+  /** 昨收持仓市值：Σ(昨收_i × 昨日股数_i)，与 dayPnl 同覆盖；供上层换算「占总资产」口径 */
   dayPrevValue: number | null
+  /** 当日净卖出金额（卖出收入 − 买入支出）：上层倒推昨收现金用，见 resolveDayPnlBasis */
+  dayCashFlow: number
+  /** 当日有成交却算不进当日盈亏的标的（缺行情或流水缺成交价），由展示层出提示 */
+  dayGaps: string[]
   /** 行情缺失、未计入市值/盈亏合计的标的 */
   missingQuotes: string[]
 }
@@ -49,7 +54,12 @@ import {
   type RealizedStats,
 } from './dto.ts'
 
-export function summarize(positions: Position[], quotes: Map<string, Quote>): PortfolioSummary {
+export function summarize(
+  positions: Position[],
+  quotes: Map<string, Quote>,
+  /** 当日成交（按标的聚合，见 trades.ts collectDayTurnover）；不传等同当日无成交 */
+  dayTurnover?: Map<string, DayTurnover>,
+): PortfolioSummary {
   const rows: PositionRow[] = positions.map(position => {
     const quote = quotes.get(position.code)
     const price = quote?.price
@@ -66,12 +76,26 @@ export function summarize(positions: Position[], quotes: Map<string, Quote>): Po
   let coveredMarketValue: number | null = null
   let coveredCostBasis = 0
   let coveredPnl = 0
-  // 当日盈亏用「较昨收」精确口径（与券商「当日参考盈亏」的金额同源）：Σ(现价−昨收)×股数。
+  // 当日盈亏用现金流量法，逐只算：
+  //   当日盈亏 = 期末价值 − 期初价值 − 当日净投入
+  //            = (现市值 + 当日卖出收入) − 昨收 × 昨日股数 − 当日买入支出
+  //   昨日股数 = 现股数 + 当日卖出股数 − 当日买入股数
+  // 为什么不是老的 Σ(现价−昨收)×现股数：当日加仓的股份，昨收到成交价那一段涨跌
+  // 不归你（券商从成交价起算）；当日清仓的标的更是整只从 holdings.csv 消失，当天
+  // 赚的钱凭空蒸发。这两处 2026-09-07 实测合计差 1,490 元。
+  // 现金流量法对「隔夜持有 / 当日买入 / 当日卖出 / 日内买卖」四种情形是同一个式子，
+  // 不需要 FIFO 逐笔配对——昨日股数的反推自动兜住。
   // 不用 Σ(市值×涨跌幅%)/Σ(市值) 的近似——金额和百分比要同源，否则拿百分比反乘市值对不上金额。
   // 这里的 dayPnlPct 是持仓口径；对券商展示的百分比在 renderSummaryText 换成总资产口径。
   let dayPnl = 0
   let dayPrevValue = 0
+  let dayCashFlow = 0
+  // 当日口径单独判定覆盖：当日清空持仓后 rows 为空、市值合计没覆盖，
+  // 但当日盈亏依然存在（就是那几笔卖出赚的钱），不能跟着市值一起变 null
+  let dayCovered = false
+  const dayGaps: string[] = []
   const missingQuotes: string[] = []
+  const turnoverUsed = new Set<string>()
   for (const row of rows) {
     totalCostBasis += row.position.cost * row.position.shares
     if (row.marketValue === null || row.pnl === null) {
@@ -82,13 +106,40 @@ export function summarize(positions: Position[], quotes: Map<string, Quote>): Po
     coveredCostBasis += row.position.cost * row.position.shares
     coveredPnl += row.pnl
     if (row.quote) {
-      dayPnl += (row.price! - row.quote.prevClose) * row.position.shares
-      dayPrevValue += row.quote.prevClose * row.position.shares
+      const t = dayTurnover?.get(row.position.code)
+      if (t !== undefined) turnoverUsed.add(row.position.code)
+      const net = t === undefined ? 0 : t.sellAmount - t.buyAmount
+      const prevShares = row.position.shares + (t?.sellShares ?? 0) - (t?.buyShares ?? 0)
+      const prevValue = row.quote.prevClose * prevShares
+      dayPnl += row.marketValue + net - prevValue
+      dayPrevValue += prevValue
+      dayCashFlow += net
+      dayCovered = true
+      if (t !== undefined && t.skipped > 0) {
+        dayGaps.push(`${t.name || t.code}（${t.skipped} 笔成交缺成交价）`)
+      }
     }
+  }
+  // 当日清仓的标的：已不在 holdings.csv 里，但当天赚的钱要计入当日盈亏。
+  // 现市值恒为 0，其余同上式；行情（昨收）由上层补取，取不到就只出提示不猜数。
+  for (const t of dayTurnover?.values() ?? []) {
+    if (turnoverUsed.has(t.code)) continue
+    const quote = quotes.get(t.code)
+    if (quote === undefined) {
+      dayGaps.push(`${t.name || t.code}（当日有成交但未取到行情）`)
+      continue
+    }
+    const net = t.sellAmount - t.buyAmount
+    const prevValue = quote.prevClose * (t.sellShares - t.buyShares)
+    dayPnl += net - prevValue
+    dayPrevValue += prevValue
+    dayCashFlow += net
+    dayCovered = true
+    if (t.skipped > 0) dayGaps.push(`${t.name || t.code}（${t.skipped} 笔成交缺成交价）`)
   }
   const hasCoverage = coveredMarketValue !== null
   const totalPnlPct = hasCoverage && coveredCostBasis > 0 ? (coveredPnl / coveredCostBasis) * 100 : null
-  const dayPnlPct = hasCoverage && dayPrevValue > 0 ? (dayPnl / dayPrevValue) * 100 : null
+  const dayPnlPct = dayCovered && dayPrevValue > 0 ? (dayPnl / dayPrevValue) * 100 : null
   return {
     rows,
     totalAssets: coveredMarketValue,
@@ -96,9 +147,11 @@ export function summarize(positions: Position[], quotes: Map<string, Quote>): Po
     totalCostBasis,
     totalPnl: hasCoverage ? coveredPnl : null,
     totalPnlPct,
-    dayPnl: hasCoverage ? dayPnl : null,
+    dayPnl: dayCovered ? dayPnl : null,
     dayPnlPct,
-    dayPrevValue: hasCoverage ? dayPrevValue : null,
+    dayPrevValue: dayCovered ? dayPrevValue : null,
+    dayCashFlow,
+    dayGaps,
     missingQuotes,
   }
 }
@@ -201,7 +254,7 @@ export function renderSummaryText(
   // 总资产用，偏差只有 dayPnl/总资产 量级，对结果影响不到 0.001 个百分点。
   // 两者都没有时降级为持仓口径，并在文案里写明分母，别让人误当券商数看。
   const { base: dayBase, basis: dayBasis } = resolveDayPnlBasis(
-    summary.dayPrevValue, cash?.value, manualTotalAssets?.value,
+    summary.dayPrevValue, cash?.value, manualTotalAssets?.value, summary.dayCashFlow,
   )
   const dayPct = dayBase !== null && summary.dayPnl !== null
     ? (summary.dayPnl / dayBase) * 100
@@ -210,6 +263,11 @@ export function renderSummaryText(
     `- 当日参考盈亏：${fmtSigned(summary.dayPnl)} 元（${fmtSigned(dayPct, 2, '%')}，` +
       `${dayBasis === 'total-assets' ? '占总资产' : '占持仓市值'}）`,
   )
+  if (summary.dayGaps.length > 0) {
+    lines.push(
+      `- ⚠️ 以下标的当日有成交但未计入当日盈亏，该数字偏离券商口径（在 trades.csv 补齐成交价即可自动计入）：${summary.dayGaps.join('、')}`,
+    )
+  }
   if (summary.missingQuotes.length > 0) {
     lines.push(
       `- ⚠️ 以下标的未取到行情，市值/盈亏合计未包含它们（持仓成本为全量口径）：${summary.missingQuotes.join('、')}`,
@@ -260,7 +318,7 @@ export function buildPortfolioPayload(
   realized?: RealizedStats | null,
 ): PortfolioPayload {
   const { base: dayBase, basis: dayBasis } = resolveDayPnlBasis(
-    summary.dayPrevValue, cash?.value, manualTotalAssets?.value,
+    summary.dayPrevValue, cash?.value, manualTotalAssets?.value, summary.dayCashFlow,
   )
   const dayPct = dayBase !== null && summary.dayPnl !== null
     ? (summary.dayPnl / dayBase) * 100
