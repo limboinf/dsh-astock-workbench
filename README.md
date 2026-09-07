@@ -53,15 +53,15 @@ cd /path/to/deepseek-harness
 pnpm dsh plugin --profile web add github:limboinf/dsh-astock-workbench
 ```
 
-- 建议锁定 commit，避免后续推送悄悄改变实际运行的代码：
-  `github:limboinf/dsh-astock-workbench#<sha>`
-- pnpm ≥10 首次安装会要求构建授权（git 依赖的 prepare 脚本）：按报错提示把包名写入
-  `--profile web` 对应 profile 目录的 `pnpm-workspace.yaml`，然后重新 add：
-  ```yaml
-  allowBuilds:
-    dsh-astock-workbench: true
-  ```
-- 更新版本：先 `pnpm dsh plugin --profile web remove dsh-astock-workbench` 再重新 add。
+pnpm ≥10 首次安装会要求构建授权（git 依赖的 prepare 脚本）：按报错提示把包名写入
+`--profile web` 对应 profile 目录的 `pnpm-workspace.yaml`，然后重新 add：
+
+```yaml
+allowBuilds:
+  dsh-astock-workbench: true
+```
+
+更新版本：先 `pnpm dsh plugin --profile web remove dsh-astock-workbench` 再重新 add。
 
 ### 2. 配置行情主源 fuyao（重要）
 
