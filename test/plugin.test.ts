@@ -1,9 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from '../src/index.ts'
+import { decodeHtmlPreviewTag } from '../src/dto.ts'
 import { HOLDINGS_HEADER, parseHoldingsCsv } from '../src/holdings.ts'
 
 interface Registered {
@@ -36,12 +37,12 @@ function setupWithData(csv: string): { reg: Registered; dataDir: string; restore
 
 const SEED = [HOLDINGS_HEADER, '600519,贵州茅台,100,1700,白酒,', '300750,宁德时代,200,260,电池,'].join('\n')
 
-test('apply：注册 13 个工具和 4 个命令', () => {
+test('apply：注册 14 个工具和 4 个命令', () => {
   const { reg, restore } = setupWithData(SEED)
   try {
     assert.deepEqual(
       reg.tools.map(t => t.name).sort(),
-      ['astock_add_position', 'astock_analyze', 'astock_decision_logs', 'astock_fundamentals', 'astock_log_decision', 'astock_positions', 'astock_quote', 'astock_reconcile', 'astock_record_trade', 'astock_remove_position', 'astock_set_cash', 'astock_set_total_assets', 'astock_trades'],
+      ['astock_add_position', 'astock_analyze', 'astock_decision_logs', 'astock_fundamentals', 'astock_log_decision', 'astock_positions', 'astock_quote', 'astock_reconcile', 'astock_record_trade', 'astock_remove_position', 'astock_set_cash', 'astock_set_total_assets', 'astock_show_html', 'astock_trades'],
     )
     assert.deepEqual(reg.commands.map(c => c.name).sort(), ['decision-logs', 'market', 'portfolio', 'profile'])
   } finally {
@@ -418,6 +419,40 @@ test('决策日志：非法日期拒绝写入', async () => {
   try {
     const writeTool = reg.tools.find(t => t.name === 'astock_log_decision')!
     await assert.rejects(() => writeTool.execute({ date: '2026-02-30', content: 'x' }))
+  } finally {
+    restore()
+  }
+})
+
+test('astock_show_html：存档 explainers/ 并捎回可解码的内嵌预览载荷', async () => {
+  const { reg, dataDir, restore } = setupWithData(SEED)
+  try {
+    const tool = reg.tools.find(t => t.name === 'astock_show_html')!
+    // html 里故意带字面 `-->`（网页自身注释），证明 base64 载荷不会被注释定界符截断
+    const html = '<!DOCTYPE html><html><body><h1>市盈率</h1><!-- 说明 --><script>1</script></body></html>'
+    const text = (await tool.execute({ title: '市盈率 图解', html })) as string
+    const preview = decodeHtmlPreviewTag(text)
+    assert.notEqual(preview, null)
+    assert.equal(preview!.title, '市盈率 图解')
+    assert.equal(preview!.html, html)
+    // 存档文件落盘且内容原样
+    assert.ok(preview!.file.startsWith(join(dataDir, 'explainers') + '/'))
+    assert.equal(readFileSync(preview!.file, 'utf8'), html)
+  } finally {
+    restore()
+  }
+})
+
+test('astock_show_html：空 html 拒收、超大 html 拒收且不落盘', async () => {
+  const { reg, dataDir, restore } = setupWithData(SEED)
+  try {
+    const tool = reg.tools.find(t => t.name === 'astock_show_html')!
+    await assert.rejects(() => tool.execute({ title: 'x', html: '   ' }))
+    await assert.rejects(() => tool.execute({ title: 'x', html: 'a'.repeat(200_001) }))
+    const explainers = join(dataDir, 'explainers')
+    if (existsSync(explainers)) {
+      assert.equal(readdirSync(explainers).length, 0, '拒收后不应有存档文件')
+    }
   } finally {
     restore()
   }

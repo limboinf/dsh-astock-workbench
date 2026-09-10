@@ -315,7 +315,6 @@ export function buildPortfolioPayload(
   manualTotalAssets?: { value: number; updatedAt: string },
   cash?: { value: number; updatedAt: string },
   quoteError?: string,
-  realized?: RealizedStats | null,
 ): PortfolioPayload {
   const { base: dayBase, basis: dayBasis } = resolveDayPnlBasis(
     summary.dayPrevValue, cash?.value, manualTotalAssets?.value, summary.dayCashFlow,
@@ -361,7 +360,6 @@ export function buildPortfolioPayload(
       asOf: cash?.updatedAt ?? manualTotalAssets?.updatedAt ?? null,
     },
     day: { pnl: summary.dayPnl, pct: dayPct, basis: dayBasis },
-    realized: realized ?? null,
     missingQuotes: summary.missingQuotes,
     quoteError: quoteError ?? null,
   }

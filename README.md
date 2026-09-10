@@ -62,6 +62,7 @@ fuyao 行情(主) ──┤
 | 手动总资产 | `astock_set_total_assets` | 录入券商口径快照（与现金口径互斥，后设置的生效） |
 | 工作台面板 | dsh web 侧边栏 | 宏观驾驶舱：总资产/已实现盈亏卡片、盘中 5s 自动轮询、大盘指数条、决策日志徽标、AI 解读/体检/复盘入口、个性化设置卡 |
 | 每日简报 | dsh 原生计划任务 + 技能 `astock-briefing` | 盘后自动生成持仓简报，落盘 `briefings/<日期>.md` |
+| 术语图解 | 技能 `astock-explain` + 工具 `astock_show_html` | 术语大白话讲解；小白画像遇难懂术语自动生成可交互 HTML/Canvas，**对话内嵌预览**（沙箱 iframe，不跳浏览器），存档 `explainers/` |
 | 快捷命令 | `/portfolio` `/market` `/profile` `/decision-logs` | 不经模型，纯本地直读持仓/大盘/画像/日志 |
 
 ## 快速开始
@@ -115,11 +116,11 @@ pnpm dsh --profile headless --dump-config | grep astock   # 配置树出现 asto
 
 ### 4. 安装技能（可选）
 
-让会话里的「写简报」「持仓截图对账」遵循同一规范：
+让会话里的「写简报」「持仓截图对账」「术语讲解与图解」遵循同一规范：
 
 ```bash
 mkdir -p ~/.dsh/skills
-cp -R skills/astock-briefing skills/astock-reconcile ~/.dsh/skills/
+cp -R skills/astock-briefing skills/astock-reconcile skills/astock-explain ~/.dsh/skills/
 ```
 
 ## 数据存放位置

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { decodePayloadTag, encodePayloadTag, stripPayloadTag } from '../src/dto.ts'
+import { decodeHtmlPreviewTag, decodePayloadTag, encodePayloadTag, encodeTag, HTML_PREVIEW_PAYLOAD_VERSION, stripPayloadTag } from '../src/dto.ts'
 import { buildPortfolioPayload, renderSummaryText, summarize } from '../src/format.ts'
 import type { Quote } from '../src/quotes.ts'
 
@@ -94,18 +94,29 @@ test('集合竞价时段与行情失败原因进载荷', () => {
   assert.equal(failed.quoteError, '网络超时')
 })
 
-test('已实现盈亏进文本与载荷，且两边同口径；不传时载荷为 null、文本不出现该行', () => {
+test('已实现盈亏只进汇总文本（2026-09-09 面板卡片已删，载荷不再携带）；不传时文本不出现该行', () => {
   const summary = summarize(positions, new Map([quote('sh600519', 1020, 2)]))
   const realized = { pnl: 1300, trades: 2, wins: 1, winRate: 50, skipped: 1 }
-  const payload = buildPortfolioPayload(summary, undefined, undefined, undefined, undefined, realized)
-  assert.deepEqual(payload.realized, realized)
 
   const text = renderSummaryText(summary, undefined, undefined, undefined, realized)
   assert.ok(text.includes('- 已实现盈亏（卖出落袋）：+1,300.00 元（卖出 2 笔，胜率 50.0%）'))
   assert.ok(text.includes('另有 1 笔卖出缺卖出价/成本'))
 
   // 无卖出记录：保持既有输出不变（老调用方/测试不受影响）
-  const bare = buildPortfolioPayload(summary)
-  assert.equal(bare.realized, null)
   assert.ok(!renderSummaryText(summary).includes('已实现盈亏'))
+})
+
+test('htmlpreview 载荷：base64 往返还原全文，html 内字面 --> 不破坏定界', () => {
+  const html = '<!DOCTYPE html><html><body><!-- 注释 --><script>i-->0;</script>中文✓</body></html>'
+  const payload = { v: HTML_PREVIEW_PAYLOAD_VERSION, title: '市盈率', file: '/tmp/x.html', htmlB64: Buffer.from(html, 'utf8').toString('base64') }
+  const text = encodeTag('htmlpreview', payload)
+
+  const decoded = decodeHtmlPreviewTag(text)
+  assert.notEqual(decoded, null)
+  assert.equal(decoded!.title, '市盈率')
+  assert.equal(decoded!.html, html)
+
+  // 版本不符/空载荷回退 null（client 按「无法解析」降级，不白屏）
+  assert.equal(decodeHtmlPreviewTag('<!--astock:htmlpreview {"v":999,"htmlB64":""}-->'), null)
+  assert.equal(decodeHtmlPreviewTag('没有载荷'), null)
 })

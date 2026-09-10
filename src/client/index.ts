@@ -28,6 +28,8 @@ interface SlotRegisterOptions {
   key?: string
   order?: number
   label?: () => unknown
+  /** chain 槽位（如 conversation.chat.turnTail）的认领函数：返回 matched 值或 null 弃权 */
+  select?: (owner: unknown) => unknown
 }
 
 type Disposable = { dispose?: () => void }
@@ -39,6 +41,8 @@ interface SlotsService {
 
 interface ClientContext {
   slots: SlotsService
+  /** ui-conversation（web 半面常驻）：注册会话节点定义，从事件流逐 turn 累积数据 */
+  uiConversation?: { events: { register(definition: unknown): void } }
   /** cordis ctx.get：惰性取服务（conversation 等 scoped 服务点击时再取） */
   get(service: string): unknown
   /** cordis ctx.effect：注册带清理的副作用 */
@@ -131,6 +135,7 @@ async function linkSend(
 
 import {
   decodeAnalyzeTag,
+  decodeHtmlPreviewTag,
   decodeMarketTag,
   decodePayloadTag,
   decodeTag,
@@ -185,9 +190,6 @@ interface PortfolioData {
   dayPct: string
   /** dayPct 的分母口径文案："占总资产"（与券商一致）或降级的"占持仓市值" */
   dayBasis: string
-  /** 已实现盈亏（卖出落袋，trades.csv）；无卖出记录时 undefined（不渲染卡片） */
-  realizedPnl?: string
-  realizedNote?: string
   quoteTime: string
   stale: boolean
 }
@@ -242,15 +244,6 @@ function payloadToPortfolioData(payload: PortfolioPayload): PortfolioData {
     dayPnl: fmtSignedNum(day.pnl),
     dayPct: fmtSignedNum(day.pct, 2, '%'),
     dayBasis: day.basis === 'total-assets' ? '占总资产' : '占持仓市值',
-    // 已实现盈亏：老载荷没有该字段（undefined）或无卖出记录（null）都不出卡片
-    ...(payload.realized != null && (payload.realized.trades > 0 || payload.realized.skipped > 0)
-      ? {
-          realizedPnl: fmtSignedNum(payload.realized.pnl),
-          realizedNote: `${payload.realized.trades} 笔卖出 · 胜率 ${
-            payload.realized.winRate === null ? '—' : fmtNum(payload.realized.winRate, 1, '%')
-          }${payload.realized.skipped > 0 ? ` · ${payload.realized.skipped} 笔未计入` : ''}`,
-        }
-      : {}),
     quoteTime: payload.quoteTime ?? '',
     stale: false,
   }
@@ -597,7 +590,9 @@ function groupDecisionLogs(entries: DecisionLogEntry[]): Array<{ month: string; 
 /** 单条决策日志：折叠行（日期+标题+条目数/性质徽标）点击展开结构化条目 */
 function DecisionLogItem({ entry, defaultOpen }: { entry: DecisionLogEntry; defaultOpen: boolean }): ReactElement {
   const [open, setOpen] = useState(defaultOpen)
-  const dayEntries = splitDayEntries(entry.body)
+  // 条目展示按时间倒序（最新一条在最上，打开先看刚才的决策）；落盘仍是追加式正序，
+  // 只在展示层翻转，天与天之间的倒序由 groupDecisionLogs 负责
+  const dayEntries = splitDayEntries(entry.body).reverse()
   const kinds = [...new Set(dayEntries.map(e => e.kind).filter(k => k !== ''))]
   return createElement('div', { style: { borderRadius: 8, background: 'rgba(127,127,127,.08)', overflow: 'hidden' } },
     createElement('button', {
@@ -1164,7 +1159,7 @@ function fundamentalsLine(code: string): string {
     + '（PE-TTM/PB-MRQ、近4个单季营收与归母净利润及同比环比），分析时直接引用这些数字。'
 }
 
-const NO_AUTO_LOG = '不要主动调用 astock_log_decision 写决策日志；如觉得值得留存，先问我要不要记录。'
+const NO_AUTO_LOG = '本次回答是分析建议、还没有成交：不要主动调用 astock_log_decision 写决策日志；如觉得值得留存，先问我要不要记录。'
 const POSITION_SOURCE = '持仓金额、比例只以 astock_positions 返回为准。'
 
 /**
@@ -1591,14 +1586,6 @@ function makeWorkbenchBody(ctx: ClientContext): (props: unknown) => ReactElement
           createElement('div', { style: { ...v, color: cellColor(data.totalPnlPct) ?? 'inherit', fontSize: 18 } }, `${data.totalPnl} 元`),
           createElement('div', { style: { ...d, color: cellColor(data.totalPnlPct) } }, data.totalPnlPct),
         ),
-        // 已实现盈亏与累计盈亏（浮动）并列：一个是"已经落袋"，一个是"如果今天全卖"
-        data.realizedPnl !== undefined
-          ? createElement('div', { style: card },
-              createElement('div', { style: k }, '已实现盈亏（卖出落袋）'),
-              createElement('div', { style: { ...v, color: cellColor(data.realizedPnl) ?? 'inherit', fontSize: 18 } }, `${data.realizedPnl} 元`),
-              createElement('div', { style: { ...d, color: cellColor(data.realizedPnl) } }, data.realizedNote ?? ''),
-            )
-          : null,
       ),
       // 持仓明细（全部字段直出工具结果，前端零计算）
       createElement('div', { style: card },
@@ -1729,6 +1716,185 @@ function blockState(block: unknown): 'running' | 'ok' | 'error' {
   if (b === null || typeof b !== 'object' || !('kind' in b)) return 'running'
   if (b.kind !== 'tool-result') return 'running'
   return b.isError === true ? 'error' : 'ok'
+}
+
+// ---------- 内嵌 HTML 图解（astock_show_html，2026-09-10） ----------
+//
+// 呈现位置是 turn 尾部（conversation.chat.turnTail 链，与原生「产出文件」chips 同一条
+// chain）：工具调用组默认整体折叠，预览藏在里面等于看不见（2026-09-10 实测），卡片必须
+// 长在 AI 消息正文下方才会被看到。数据链路：会话事件（tool/result）经节点定义逐 turn
+// 累积载荷 → turn data → select 认领 → 卡片；会话重建时事件重放、同样恢复。
+// sandbox 只给 allow-scripts：脚本可跑，无同源、无存储、无弹窗，模型生成的页面天然关在笼子里。
+//
+// 节点定义的 start/update/buildLocationData 首参一律是 context（.state 取状态），不是
+// state 本身。首版按 state 写，update 里读 state.items 直接抛 TypeError；assembler 没有
+// try/catch，整条 tool/result 事件被丢掉——所有工具调用都settle不了，轨迹全标 interrupted、
+// 对话里图解位置显示「调用失败」（2026-09-10 实测并修）。
+
+/** 单条图解（载荷在事件累积时解码，渲染层拿到的就是 html 原文） */
+interface HtmlPreviewItem {
+  title: string
+  file: string
+  html: string
+}
+
+/** 一 turn 内最多渲染几张图解：正常一轮一张，兜顶防刷屏 */
+const HTML_PREVIEW_PER_TURN = 4
+
+/**
+ * 宽容提取结果文本：text 部分在冻结块顶层是 {type:'text'}，在会话事件里却嵌在
+ * {type:'tool-result', content:[…]} 里（2026-09-10 实测）。两种形态都接，递归下钻一层。
+ */
+function extractResultText(content: unknown): string {
+  if (!Array.isArray(content)) return ''
+  const out: string[] = []
+  for (const part of content) {
+    if (part === null || typeof part !== 'object') continue
+    const p = part as Record<string, unknown>
+    if (typeof p.text === 'string') { out.push(p.text); continue }
+    if (Array.isArray(p.content)) out.push(extractResultText(p.content))
+  }
+  return out.join('\n')
+}
+
+/** 一 turn 内累积到的图解（engine 持有的 State） */
+interface HtmlPreviewState {
+  turn: number
+  items: HtmlPreviewItem[]
+}
+
+/**
+ * 会话事件累积器（ConversationNodeDefinition 契约，形状对齐 ui-deliverables 的
+ * deliverablesDefinition）。三个回调的首参都是 **context**（带 .state），不是 state 本身。
+ */
+const htmlPreviewDefinition = {
+  kind: 'astockHtmlPreview',
+  match(
+    event: { type: string; surfaceOp?: unknown; data?: { turn?: number } },
+  ): { id: string; role: 'start' | 'update' } | null {
+    if (event.type === 'turn/start' && typeof event.data?.turn === 'number') {
+      return { id: String(event.data.turn), role: 'start' }
+    }
+    // 结果事件不带工具名：先全收，update 里靠解码失败天然过滤掉别人的工具。
+    // 只收 append 原生结果——replace 是模型可见面的影子拷贝，收了会把同一张图记两次。
+    if (event.type === 'tool/result' && event.surfaceOp === 'append' && typeof event.data?.turn === 'number') {
+      return { id: String(event.data.turn), role: 'update' }
+    }
+    return null
+  },
+  start(
+    _context: unknown,
+    match: { event: { type: string; data: { turn: number } } },
+  ): HtmlPreviewState {
+    if (match.event.type !== 'turn/start') throw new Error('astockHtmlPreview 的 start 只接 turn/start')
+    return { turn: match.event.data.turn, items: [] }
+  },
+  update(
+    context: { state: HtmlPreviewState },
+    match: { event: { type: string; data?: Record<string, unknown> } },
+  ): HtmlPreviewState {
+    const state = context.state
+    if (match.event.type !== 'tool/result' || state.items.length >= HTML_PREVIEW_PER_TURN) return state
+    const message = match.event.data?.message as
+      | { isError?: boolean; content?: unknown }
+      | undefined
+    if (message === undefined || message.isError === true || !Array.isArray(message.content)) return state
+    const text = extractResultText(message.content)
+    const preview = decodeHtmlPreviewTag(text)
+    if (preview === null) return state
+    return { turn: state.turn, items: [...state.items, { title: preview.title, file: preview.file, html: preview.html }] }
+  },
+  buildLocationData(
+    context: { state?: HtmlPreviewState },
+    scope: string,
+    previous: { kind: string; turn: number; key: string; value: { items: HtmlPreviewItem[] } } | null | undefined,
+  ): { kind: 'turn'; turn: number; key: string; value: { items: HtmlPreviewItem[] } } | null {
+    if (scope !== 'turn' || context.state === undefined) return null
+    if (previous?.kind === 'turn' && previous.turn === context.state.turn
+      && previous.key === 'astockHtmlPreview' && previous.value.items === context.state.items) {
+      // 判别字段是运行时手工核对的（kind: string 收窄不了字面量），断言安全
+      return previous as { kind: 'turn'; turn: number; key: string; value: { items: HtmlPreviewItem[] } }
+    }
+    return { kind: 'turn', turn: context.state.turn, key: 'astockHtmlPreview', value: { items: context.state.items } }
+  },
+}
+
+/** 新标签页独立打开：blob URL 不依赖存档路径，旧会话里的图解也能直接看 */
+function openHtmlInNewWindow(html: string): void {
+  const url = URL.createObjectURL(new Blob([html], { type: 'text/html; charset=utf-8' }))
+  window.open(url, '_blank', 'noopener')
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+}
+
+const htmlPreviewButtonStyle = {
+  fontSize: 11, opacity: 0.6, cursor: 'pointer',
+  border: 'none', background: 'transparent', padding: '0 4px',
+} as const
+
+function HtmlPreviewCard(props: { preview: HtmlPreviewItem }): ReactElement {
+  const { preview } = props
+  const [expanded, setExpanded] = useState(false)
+  return createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+    createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+      createElement('span', {
+        style: {
+          fontSize: 12.5, fontWeight: 600, flex: 1, minWidth: 0,
+          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        },
+      }, `🎨 ${preview.title}`),
+      createElement('button', {
+        type: 'button', onClick: () => openHtmlInNewWindow(preview.html), style: htmlPreviewButtonStyle,
+      }, '独立窗口'),
+      createElement('button', {
+        type: 'button', onClick: () => setExpanded(v => !v), style: htmlPreviewButtonStyle,
+      }, expanded ? '收起' : '放大'),
+    ),
+    createElement('iframe', {
+      sandbox: 'allow-scripts',
+      srcDoc: preview.html,
+      title: preview.title,
+      style: {
+        width: '100%',
+        height: expanded ? 720 : 420,
+        border: '1px solid rgba(127,127,127,.22)',
+        borderRadius: 8,
+        background: '#fff',
+      },
+    }),
+    preview.file !== ''
+      ? createElement('div', { style: { fontSize: 10.5, opacity: 0.45 } }, `已存档：${preview.file}`)
+      : null,
+  )
+}
+
+/** turn 尾部卡片链入口：select 把认领到的图解 items 以 matched 传入 */
+function HtmlPreviewTail(props: Record<string, unknown>): ReactElement {
+  const items = Array.isArray(props.matched) ? props.matched as HtmlPreviewItem[] : []
+  return createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, padding: '6px 0' } },
+    ...items.map((it, i) => createElement(HtmlPreviewCard, { key: i, preview: it })),
+  )
+}
+
+/** 折叠工具组里的占位行：结果本体在消息下方的卡片，这里只留一行摘要（base64 别漏出来） */
+function HtmlToolStub(props: Record<string, unknown>): ReactElement {
+  const block = props.block
+  const state = blockState(block)
+  const raw = state === 'running' ? '' : extractResultText((block as Record<string, unknown> | undefined)?.content)
+  if (state === 'running') {
+    return createElement('div', { style: { fontSize: 12.5, opacity: 0.65, padding: '2px 0' } },
+      '生成图解中…',
+    )
+  }
+  if (state === 'error') {
+    // 把工具报错原文带出来（截断）：调用失败不再是无头案
+    return createElement('div', { style: { fontSize: 12.5, color: UP, padding: '2px 0' } },
+      `astock_show_html 调用失败${raw !== '' ? `：${raw.slice(0, 140)}` : ''}`,
+    )
+  }
+  const title = decodeHtmlPreviewTag(raw)?.title ?? ''
+  return createElement('div', { style: { fontSize: 12, opacity: 0.6, padding: '2px 0' } },
+    `🎨 图解「${title}」已生成——正文下方内嵌预览`,
+  )
 }
 
 // ---------- 诊断书卡片（astock_analyze，2026-09-06 原型 A 定案） ----------
@@ -2139,7 +2305,7 @@ function makeQuickRow(ctx: ClientContext): (props: never) => ReactElement {
 
 export const name = 'astock-workbench/client'
 
-export const inject = ['slots', 'remote', 'remote.commands']
+export const inject = ['slots', 'uiConversation', 'remote', 'remote.commands']
 
 const ASTOCK_TOOLS = [
   'astock_positions',
@@ -2169,6 +2335,29 @@ export function apply(ctx: ClientContext): void {
       AstockToolRow,
     ))
   }
+
+  // astock_show_html 在折叠的工具组里只留一行干净摘要（防 base64 漏出来）；
+  // 结果本体走下面的 turn 尾部卡片
+  ctx.slots.inject('tool.call.toolview', () => ctx.slots.register(
+    { name: 'tool.call.toolview', key: 'astock_show_html' },
+    HtmlToolStub,
+  ))
+
+  // 图解卡片长在 AI 消息正文下方：turn 尾部链（conversation.chat.turnTail，
+  // 与原生「产出文件」chips 同一条 chain），会话重建时事件重放、卡片随之恢复。
+  // uiConversation 缺席（异常组合）时静默不挂，工具组里仍有摘要行兜底。
+  ctx.uiConversation?.events.register(htmlPreviewDefinition)
+  ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register(
+    {
+      name: 'conversation.chat.turnTail',
+      select: (owner: unknown): HtmlPreviewItem[] | null => {
+        const items = (owner as { turn?: { data?: Map<string, { items?: HtmlPreviewItem[] }> } } | null)
+          ?.turn?.data?.get?.('astockHtmlPreview')?.items
+        return Array.isArray(items) && items.length > 0 ? items : null
+      },
+    },
+    HtmlPreviewTail,
+  ))
 
   ctx.slots.inject('conversation.input.left', () => ctx.slots.register(
     { name: 'conversation.input.left', id: 'astock-quick' },

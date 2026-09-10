@@ -33,7 +33,14 @@ import { currentLocalDate, DecisionLogStore, renderDecisionLogs, validateLogDate
 import { readBalance, validateBalanceDate, writeBalance, writeCashBalance } from './balance.ts'
 import { readProfile, writeProfile } from './profile-store.ts'
 import { defaultProfile, PROFILE_LABELS, type InvestorProfile } from './profile.ts'
-import { encodeMarketTag, encodeTag, ANALYZE_PAYLOAD_VERSION, type AnalyzePayload } from './dto.ts'
+import {
+  encodeMarketTag,
+  encodeTag,
+  ANALYZE_PAYLOAD_VERSION,
+  HTML_PREVIEW_PAYLOAD_VERSION,
+  type AnalyzePayload,
+  type HtmlPreviewPayload,
+} from './dto.ts'
 import { fetchMarketOverview } from './market.ts'
 import { computeKlineStats, fetchKlines } from './kline.ts'
 import { fetchFundamentals, renderFundamentalsText } from './fundamentals.ts'
@@ -292,7 +299,7 @@ async function buildPositionsText(store: HoldingsStore, trades: TradesStore, sig
   }
   // 结构化载荷挂在末尾（不可见的 HTML 注释）：面板照它取数，不再靠正则啃中文文案。
   // 模型读到的仍是上面的 markdown，载荷只是同一份数字的机器可读形式。
-  const payload = buildPortfolioPayload(summary, quoteTimeText, manualTotalAssets, cash, quoteError, hasRealized ? realized.stats : null)
+  const payload = buildPortfolioPayload(summary, quoteTimeText, manualTotalAssets, cash, quoteError)
   return `${text}\n${renderPayloadTag(payload)}`
 }
 
@@ -495,6 +502,25 @@ export const name = 'astock-workbench'
 
 export const inject = ['tools', 'commands']
 
+/** astock_show_html 的硬上限：图解是讲解页不是作品集，超了说明没做到「一页一概念」 */
+const HTML_PREVIEW_MAX_CHARS = 200_000
+
+/**
+ * 图解存档：explainers/<本地时间戳>-<标题>.html。
+ * 标题只保留文件名安全字符（中文保留，路径分隔符等剥掉），剥完为空退回「图解」。
+ */
+function saveExplainerHtml(dir: string, title: string, html: string): string {
+  const safe = title.replace(/[\\/:*?"<>|\s#]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || '图解'
+  const explainersDir = join(dir, 'explainers')
+  mkdirSync(explainersDir, { recursive: true })
+  const d = new Date()
+  const p = (n: number): string => String(n).padStart(2, '0')
+  const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
+  const file = join(explainersDir, `${stamp}-${safe}.html`)
+  writeFileSync(file, html, 'utf8')
+  return file
+}
+
 export function apply(ctx: DshPluginContext): void {
   const store = new HoldingsStore(resolveDataDir())
   const trades = new TradesStore(store.dir)
@@ -605,9 +631,12 @@ export function apply(ctx: DshPluginContext): void {
   ctx.tools.register({
     name: 'astock_log_decision',
     description:
-      '按交易日追加一条投资决策日志（只记录观察、依据、风险与复核条件，不执行交易）。' +
-      '调用纪律：只有①用户明确要求记录/写日志，或②你先询问「是否把这条记入决策日志」且用户确认后才调用。' +
-      '行情查询、持仓分析、体检、复盘、对账等任务结束时**不要**主动写决策日志，最多在结尾问一句要不要记。',
+      '按交易日追加一条投资决策日志（只做记录，绝不代替用户执行交易）。' +
+      '调用纪律分两档：①用户已执行的买卖动作（买入/加仓/减仓/卖出/清仓，含对账、流水确认的成交）免问直记——' +
+      '在完成持仓记账（astock_add_position / astock_remove_position / astock_reconcile）的同一轮回复里直接调用本工具补一条，' +
+      'kind 用对应性质，summary 带标的/价格/股数，正文按写作规范写全成交记录、理由、风险与复核条件；' +
+      '②未执行的内容（计划、观察、复盘、纪律提醒等）保持先问后写：最多在回复结尾问一句「要不要记入决策日志」，确认后才调用。' +
+      '纯行情查询、体检等无决策内容的任务不写也不问。',
     parameters: {
       type: 'object',
       properties: {
@@ -1019,6 +1048,54 @@ export function apply(ctx: DshPluginContext): void {
         text += `\n${doc.warnings.map(w => `- ⚠️ ${w}`).join('\n')}`
       }
       return text
+    },
+  })
+
+  // 内嵌 HTML 图解（astock-explain 技能的呈现通道）：模型生成的单文件 HTML
+  // 存档到 explainers/，并以不可见注释 tag 捎回，client 半面在对话流里用
+  // 沙箱 iframe 直接渲染——用户在聊天页内交互预览，不跳系统浏览器开文件。
+  // HTML 转 base64 进 tag：字面 `-->` 会截断注释定界符（见 dto.ts decodeHtmlPreviewTag）。
+  ctx.tools.register({
+    name: 'astock_show_html',
+    description:
+      '把一张单文件交互式 HTML 图解（术语图解/概念演示/可动手的动画页）内嵌到对话消息里预览，' +
+      '用户无需打开外部浏览器即可直接交互。HTML 必须已完整生成：单文件、内联全部 CSS/JS、' +
+      '零外部依赖零网络请求；一个概念一页，全文控制在 60KB 以内。调用后用一两句话告诉用户' +
+      '「可以动手操作什么、观察什么变化」，不要复述页面全部内容。',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '图解标题（一句话结论式），如「市盈率 = 按现在的赚钱速度几年回本」' },
+        html: { type: 'string', description: '完整 HTML 文档全文（<!DOCTYPE html> 开头，内联全部 CSS/JS）' },
+      },
+      required: ['title', 'html'],
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
+    execute: async (args: { title: string; html: string }) => {
+      const html = args.html ?? ''
+      if (html.trim() === '') throw new Error('html 不能为空')
+      if (html.length > HTML_PREVIEW_MAX_CHARS) {
+        throw new Error(
+          `HTML 过大（约 ${Math.round(html.length / 1024)}KB，上限 ${Math.round(HTML_PREVIEW_MAX_CHARS / 1024)}KB）。`
+            + '一个概念一页，砍掉装饰与重复示例后重试',
+        )
+      }
+      const title = args.title?.trim() !== '' ? args.title.trim() : '互动图解'
+      const file = saveExplainerHtml(store.dir, title, html)
+      const payload: HtmlPreviewPayload = {
+        v: HTML_PREVIEW_PAYLOAD_VERSION,
+        title,
+        file,
+        htmlB64: Buffer.from(html, 'utf8').toString('base64'),
+      }
+      return [
+        `图解「${title}」已在对话中内嵌预览（沙箱环境，可直接交互），存档：${file}`,
+        '接下来用一两句话引导用户怎么玩、看什么变化（交互说法自由发挥，别每次都提滑杆按钮），并确认是否看懂；不要复述页面全部内容。',
+        encodeTag('htmlpreview', payload),
+      ].join('\n')
     },
   })
 

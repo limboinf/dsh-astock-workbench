@@ -85,11 +85,6 @@ export interface PortfolioPayload {
     pct: number | null
     basis: DayPnlBasis
   }
-  /**
-   * 已实现盈亏统计（卖出落袋）。可选字段：老版本 host 的载荷没有它，
-   * client 按「无数据」处理（不渲染该卡片）；无卖出记录时为 null。
-   */
-  realized?: RealizedStats | null
   /** 未取到行情、未计入市值/盈亏合计的标的 */
   missingQuotes: string[]
   /** 行情取数失败的原因（成功时 null） */
@@ -320,4 +315,49 @@ export interface AnalyzePayload {
 export function decodeAnalyzeTag(text: string): AnalyzePayload | null {
   const parsed = decodeTag<AnalyzePayload>('analyze', text)
   return parsed?.v === ANALYZE_PAYLOAD_VERSION ? parsed : null
+}
+
+// ---------- astock_show_html：内嵌 HTML 图解载荷 ----------
+//
+// HTML 是模型生成的自由文本，里面可能出现字面 `-->`（网页自己的注释、JS 惯用法），
+// 直接塞进单行注释 tag 会被 TAG_CLOSE 截断。所以 html 先转 base64 再进 tag：
+// base64 字母表不含 `-`，天然与注释定界符互斥。
+
+export const HTML_PREVIEW_PAYLOAD_VERSION = 1
+
+export interface HtmlPreviewPayload {
+  v: typeof HTML_PREVIEW_PAYLOAD_VERSION
+  /** 图解标题（卡片头展示） */
+  title: string
+  /** 存档文件绝对路径（explainers/） */
+  file: string
+  /** HTML 全文的 base64（UTF-8） */
+  htmlB64: string
+}
+
+/** 浏览器/Node 双面可用的 base64 → UTF-8（dto 零 import，不能用 Buffer） */
+export function utf8FromBase64(b64: string): string {
+  const bin = atob(b64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return new TextDecoder().decode(bytes)
+}
+
+/**
+ * 解析内嵌图解载荷；没有、坏了都返回 null，由调用方决定回退展示。
+ * html 字段已解码为原文，client 拿到即可直接喂给 iframe srcDoc。
+ */
+export function decodeHtmlPreviewTag(text: string): { title: string; file: string; html: string } | null {
+  const parsed = decodeTag<HtmlPreviewPayload>('htmlpreview', text)
+  if (parsed?.v !== HTML_PREVIEW_PAYLOAD_VERSION) return null
+  if (typeof parsed.htmlB64 !== 'string' || parsed.htmlB64 === '') return null
+  try {
+    return {
+      title: typeof parsed.title === 'string' && parsed.title !== '' ? parsed.title : '互动图解',
+      file: typeof parsed.file === 'string' ? parsed.file : '',
+      html: utf8FromBase64(parsed.htmlB64),
+    }
+  } catch {
+    return null
+  }
 }

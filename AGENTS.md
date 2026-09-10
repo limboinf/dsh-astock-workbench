@@ -19,7 +19,9 @@ npm run build       # tsdown → lib/index.js（ESM，无 dts）
 ## 目录结构
 
 ```
-src/index.ts    插件入口（export name/inject/apply），注册 13 个 astock_* 工具 + /portfolio、/decision-logs 命令
+src/index.ts    插件入口（export name/inject/apply），注册 14 个 astock_* 工具（含
+                astock_show_html：单文件 HTML 存档 explainers/ + base64 载荷，
+                client 半面沙箱 iframe 在对话流内嵌预览）+ /portfolio、/decision-logs 命令
 src/holdings.ts 持仓 CSV 解析/加权合并/清仓/覆盖写（文档模型：注释/坏行原样保留），纯函数，单测覆盖
 src/trades.ts   成交流水 trades.csv（文档模型同 holdings）：清仓/减仓自动补记 + 手动补录，
                 已实现盈亏统计（合计/笔数/胜率/skipped）；卖出价=当时行情、成本=本地口径，可手工修正；
@@ -45,8 +47,11 @@ src/dto.ts      面板数据契约（host ⇄ client 唯一载荷）：纯类型
                 所以 client 半面能直接 import，两边不再双写。换传输通道时本文件不动
 test/           node:test 单测（CSV、行情解析、汇总计算、apply 注册面）
 scripts/        live-check.ts
-skills/astock-briefing/  简报规范技能（约束模型：数字必须引用工具返回、不给投资建议）
+skills/astock-briefing/  简报规范技能（约束模型：数字必须引用工具返回，ADR-0002 后直接给操作参考）
 skills/astock-reconcile/ 截图对账技能（约束模型：逐行抄数、两段式确认、token 原样传递）
+skills/astock-explain/   术语图解技能（先答后图：画像术语档=解释术语的小白，遇难懂术语
+                         按难度动态生成可交互 HTML/Canvas，经 astock_show_html 对话内嵌
+                         预览；生成前先复用已装图形类技能）
 docs/           web-ui注入技术方案-20260903.md（待 review 的 Web UI 计划）
 cordis.dev.patch.yml  开发模式：源码直载（name 指向 ./src/index.ts）
 cordis.patch.yml      安装模式：以 npm 包名插入
